@@ -1,21 +1,25 @@
 """Flask application entry point for BillPilot.
 
 Serves the minimal test UI and REST API endpoints.
-Enforces JSON responses for errors and exposes GET /api/health.
+Enforces JSON responses for errors and exposes GET /api/health and POST /api/extract.
 """
 
 import logging
-from flask import Flask, jsonify, send_from_directory
+from datetime import date
+from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 import config
 from db import init_db
+import ai_client
+import services
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("billpilot")
+
 
 def create_app() -> Flask:
     """Create and configure the Flask application."""
@@ -40,6 +44,41 @@ def create_app() -> Flask:
             "demo_mode": config.DEMO_MODE,
         }), 200
 
+    @app.route("/api/extract", methods=["POST"])
+    def extract():
+        """Extract structured invoice fields from natural language text."""
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or "text" not in payload:
+            return jsonify({"error": "Request body must be JSON containing a 'text' field."}), 400
+
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return jsonify({"error": "Text is required and must be a non-empty string."}), 400
+
+        today_iso = date.today().isoformat()
+        extraction = ai_client.extract_invoice(
+            text.strip(),
+            today=today_iso,
+            default_currency=config.DEFAULT_CURRENCY,
+        )
+
+        validation_errors = services.validate_extraction(extraction, today=today_iso)
+
+        response_data = {
+            "client_name": extraction.get("client_name"),
+            "client_email": extraction.get("client_email"),
+            "items": extraction.get("items", []),
+            "currency": extraction.get("currency", config.DEFAULT_CURRENCY),
+            "due_date": extraction.get("due_date"),
+            "note": extraction.get("note"),
+            "missing_fields": extraction.get("missing_fields", []),
+            "confidence": extraction.get("confidence", 0.9),
+            "ai_mode": extraction.get("ai_mode", "ai"),
+            "errors": validation_errors,
+        }
+
+        return jsonify(response_data), 200
+
     @app.errorhandler(HTTPException)
     def handle_http_exception(e: HTTPException):
         """Return HTTP errors as clean JSON."""
@@ -52,6 +91,7 @@ def create_app() -> Flask:
         return jsonify({"error": "An internal server error occurred."}), 500
 
     return app
+
 
 app = create_app()
 
