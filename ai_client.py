@@ -46,12 +46,16 @@ def _validate_ai_schema(d: Any) -> bool:
 
 def _call_gemini(system_prompt: str, user_text: str) -> str:
     """Call Google Gemini generateContent REST API."""
-    model = config.AI_MODEL.strip() or "gemini-1.5-flash"
+    model = (config.AI_MODEL.strip() if config.AI_MODEL else "") or "gemini-2.5-flash"
     api_key = config.AI_API_KEY.strip()
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured.")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
     payload = {
         "contents": [
             {
@@ -69,7 +73,13 @@ def _call_gemini(system_prompt: str, user_text: str) -> str:
         },
     }
 
-    resp = requests.post(url, json=payload, timeout=AI_TIMEOUT)
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=AI_TIMEOUT)
+    except requests.RequestException as req_err:
+        err_type = type(req_err).__name__
+        logger.warning("Gemini network request failed: %s", err_type)
+        raise RuntimeError(f"Gemini API request failed: {err_type}") from None
+
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
 
@@ -117,6 +127,80 @@ def _call_anthropic(system_prompt: str, user_text: str) -> str:
     return content[0].get("text", "")
 
 
+FORBIDDEN_REMINDER_WORDS = (
+    "legal action",
+    "lawsuit",
+    "court",
+    "sue",
+    "attorney",
+    "lawyer",
+    "collections agency",
+    "collection agency",
+    "threat",
+    "police",
+    "penalty",
+    "penalties",
+)
+
+
+def is_reminder_copy_safe(subject: str, note: str) -> bool:
+    """Check that reminder copy is under 120 words and contains no threats or legal aggression."""
+    combined = f"{subject} {note}".lower()
+    for phrase in FORBIDDEN_REMINDER_WORDS:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", combined):
+            return False
+    words = note.split()
+    if len(words) > 120:
+        return False
+    return True
+
+
+def extract_invoice_fields(
+    parsed: Dict[str, Any],
+    original_text: str,
+    default_currency: str = "USD",
+) -> Dict[str, Any]:
+    """Validate, normalize, and safeguard invoice fields extracted by AI or parser.
+    
+    Verifies that any non-null client_email returned actually appears
+    (case-insensitive) in original_text. If hallucinated, clears it to None
+    and ensures 'client_email' is added to missing_fields.
+    """
+    client_name = parsed.get("client_name")
+    client_email = parsed.get("client_email")
+    items = parsed.get("items", [])
+    currency = (parsed.get("currency") or default_currency).upper()
+    due_date = parsed.get("due_date")
+    note = parsed.get("note")
+    confidence = float(parsed.get("confidence", 0.9))
+    missing = list(parsed.get("missing_fields", []))
+
+    # Anti-hallucination check for email
+    if client_email:
+        email_str = str(client_email).strip().lower()
+        if email_str not in original_text.lower():
+            logger.info("Stripping hallucinated client_email '%s' not present in input text", client_email)
+            client_email = None
+            if "client_email" not in missing:
+                missing.append("client_email")
+    elif "client_email" not in missing:
+        missing.append("client_email")
+
+    if not due_date and "due_date" not in missing:
+        missing.append("due_date")
+
+    return {
+        "client_name": client_name,
+        "client_email": client_email,
+        "items": items,
+        "currency": currency,
+        "due_date": due_date,
+        "note": note,
+        "missing_fields": missing,
+        "confidence": confidence,
+    }
+
+
 def extract_invoice(
     text: str,
     today: Optional[str] = None,
@@ -141,7 +225,10 @@ def extract_invoice(
 
     # If provider is 'none' or no key configured, run deterministic fallback
     if provider == "none" or not config.AI_API_KEY.strip() or config.AI_API_KEY == "your_ai_api_key_here":
-        return parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+        fallback_res = parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+        fields = extract_invoice_fields(fallback_res, text, default_currency=currency)
+        fields["ai_mode"] = "fallback"
+        return fields
 
     system_prompt = (
         "You are an invoice extraction assistant for freelancers.\n"
@@ -172,38 +259,31 @@ def extract_invoice(
                 raw_response = _call_anthropic(system_prompt, text)
             else:
                 logger.warning("Unrecognized AI_PROVIDER '%s'. Falling back.", provider)
-                return parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+                fallback_res = parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+                fields = extract_invoice_fields(fallback_res, text, default_currency=currency)
+                fields["ai_mode"] = "fallback"
+                return fields
 
             cleaned = _clean_json_text(raw_response)
             parsed = json.loads(cleaned)
 
             if _validate_ai_schema(parsed):
-                # Ensure missing_fields and currency are normalized
-                missing = list(parsed.get("missing_fields", []))
-                if not parsed.get("client_email") and "client_email" not in missing:
-                    missing.append("client_email")
-                if not parsed.get("due_date") and "due_date" not in missing:
-                    missing.append("due_date")
-
-                return {
-                    "client_name": parsed.get("client_name"),
-                    "client_email": parsed.get("client_email"),
-                    "items": parsed.get("items", []),
-                    "currency": (parsed.get("currency") or currency).upper(),
-                    "due_date": parsed.get("due_date"),
-                    "note": parsed.get("note"),
-                    "missing_fields": missing,
-                    "confidence": float(parsed.get("confidence", 0.9)),
-                    "ai_mode": "ai",
-                }
+                fields = extract_invoice_fields(parsed, text, default_currency=currency)
+                fields["ai_mode"] = "ai"
+                return fields
             else:
                 logger.warning("Attempt %d: Model returned JSON not matching schema.", attempt + 1)
         except Exception as e:
-            logger.warning("Attempt %d: AI extraction failed with error: %s", attempt + 1, str(e))
+            err_type = type(e).__name__
+            err_msg = str(e).split("\n")[0][:120]
+            logger.warning("Attempt %d: AI extraction failed (%s): %s", attempt + 1, err_type, err_msg)
 
     # All AI attempts failed; use deterministic fallback parser
     logger.info("Falling back to deterministic regex parser.")
-    return parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+    fallback_res = parse_fallback_extraction(text, today=ref_today, default_currency=currency)
+    fields = extract_invoice_fields(fallback_res, text, default_currency=currency)
+    fields["ai_mode"] = "fallback"
+    return fields
 
 
 def build_template_reminder(
@@ -320,15 +400,22 @@ def draft_reminder(invoice: Dict[str, Any], tone: Optional[str] = None) -> Dict[
         cleaned = _clean_json_text(raw)
         data = json.loads(cleaned)
         if isinstance(data, dict) and data.get("subject") and data.get("note"):
-            return {
-                "subject": str(data["subject"]).strip(),
-                "note": str(data["note"]).strip(),
-                "tone": selected_tone,
-                "days_overdue": days_overdue,
-                "ai_mode": "ai",
-            }
+            ai_subject = str(data["subject"]).strip()
+            ai_note = str(data["note"]).strip()
+            if is_reminder_copy_safe(ai_subject, ai_note):
+                return {
+                    "subject": ai_subject,
+                    "note": ai_note,
+                    "tone": selected_tone,
+                    "days_overdue": days_overdue,
+                    "ai_mode": "ai",
+                }
+            else:
+                logger.warning("AI reminder copy violated word count (<=120) or safety rules. Falling back to template.")
     except Exception as e:
-        logger.warning("AI reminder generation failed: %s. Using template fallback.", e)
+        err_type = type(e).__name__
+        err_msg = str(e).split("\n")[0][:120]
+        logger.warning("AI reminder generation failed (%s: %s). Using template fallback.", err_type, err_msg)
 
     template = build_template_reminder(invoice, selected_tone, days_overdue)
     return {

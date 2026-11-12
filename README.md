@@ -18,6 +18,15 @@ BillPilot transforms a single conversational sentence—such as *"Invoice Ravi $
 
 ---
 
+## 📹 Demo Video
+
+Watch the walkthrough of BillPilot in action demonstrating invoice extraction, PayPal Sandbox dispatch, real-time status transitions upon payment, and tone-aware reminder automation:
+
+- **Demo Video URL**: [https://youtu.be/billpilot-demo](https://youtu.be/billpilot-demo) *(Public YouTube link)*
+- **Demo Script**: See [3-Minute Live Demo Flow](#-3-minute-live-demo-flow) for step-by-step reproduction instructions.
+
+---
+
 ## 🏗️ Architecture
 
 ```text
@@ -35,6 +44,20 @@ BillPilot transforms a single conversational sentence—such as *"Invoice Ravi $
                            └────► PayPal Sandbox REST API
                                   (api-m.sandbox.paypal.com)
 ```
+
+---
+
+## 🛠️ Tools & Tech Stack
+
+- **Backend Framework**: Python 3.12, Flask 3.1, Requests 2.32, SQLite3
+- **PayPal Integration**: PayPal Invoicing API v2 (`/v1/oauth2/token`, `/v2/invoicing/invoices`, `/send`, `/remind`, `/search-invoices`)
+- **AI Providers**:
+  - Google Gemini API (`gemini-2.5-flash` via REST with `x-goog-api-key` header authentication)
+  - Anthropic Messages API (`claude-3-haiku-20240307`)
+  - Offline Deterministic Regex & Rule-Based Template Engine (`ai_mode="fallback"`)
+- **Frontend / Test Harness**: Vanilla HTML5, semantic CSS3 (responsive grid, zero external CDN/framework dependencies), modern ES6 JavaScript (Fetch API, DOM node constructors)
+- **Testing & Tooling**: Pytest 8.3, Python-dotenv 1.0, Node.js (syntax validation)
+- **Security & Privacy**: Client-side UUID idempotency keys, zero innerHTML dynamic binding, strict server-side bounds validation, in-memory credential token caching
 
 ---
 

@@ -12,6 +12,8 @@ Serves the minimal test UI and REST API endpoints:
 
 import logging
 import re
+import sqlite3
+import time
 from datetime import date, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
@@ -123,17 +125,76 @@ def create_app() -> Flask:
 
         # Double-submit protection via idempotency_key
         idempotency_key = data.get("idempotency_key")
+        reserved_id = None
         if idempotency_key:
             existing = db.get_invoice_by_idempotency_key(idempotency_key)
             if existing:
-                logger.info("Resending existing invoice for idempotency_key: %s", idempotency_key)
-                return jsonify(services.format_invoice_response(existing)), 200
+                if existing.get("last_status") == "DRAFT" and existing.get("paypal_invoice_id"):
+                    logger.info("Retrying send for prior draft invoice %s (key=%s)", existing["paypal_invoice_id"], idempotency_key)
+                    try:
+                        payer_url = paypal_client.send_invoice(existing["paypal_invoice_id"])
+                        raw_status = "SENT"
+                        invoice_number = existing.get("invoice_number")
+                        try:
+                            details = paypal_client.get_invoice(existing["paypal_invoice_id"])
+                            invoice_number = details.get("invoice_number") or invoice_number
+                            raw_status = details.get("raw_status") or raw_status
+                            payer_url = payer_url or details.get("payer_url")
+                        except Exception as get_err:
+                            logger.warning("Could not fetch invoice details after retried send: %s", get_err)
+
+                        db.update_invoice_status(
+                            existing["id"],
+                            raw_status,
+                            recipient_url=payer_url,
+                            invoice_number=invoice_number,
+                        )
+                        updated = db.get_invoice(existing["id"])
+                        return jsonify(services.format_invoice_response(updated)), 200
+                    except paypal_client.PayPalError as send_err:
+                        logger.error("Retry send failed for draft %s: %s", existing["paypal_invoice_id"], send_err)
+                        return jsonify({"error": f"Prior draft {existing['paypal_invoice_id']} failed to send: {send_err.message}"}), 502
+                elif existing.get("last_status") != "CREATING":
+                    logger.info("Resending existing invoice for idempotency_key: %s", idempotency_key)
+                    return jsonify(services.format_invoice_response(existing)), 200
+
+            # Atomically reserve the idempotency key in DB to prevent concurrent duplicate creation
+            try:
+                reservation_record = {
+                    "idempotency_key": idempotency_key,
+                    "paypal_invoice_id": None,
+                    "invoice_number": None,
+                    "client_name": data["client_name"].strip(),
+                    "client_email": data["client_email"].strip(),
+                    "currency": data.get("currency", "USD").upper(),
+                    "total": total,
+                    "due_date": data.get("due_date"),
+                    "source_text": data.get("source_text"),
+                    "extracted_json": data,
+                    "ai_mode": data.get("ai_mode", "ai"),
+                    "recipient_url": None,
+                    "last_status": "CREATING",
+                }
+                reserved_id = db.insert_invoice(reservation_record)
+            except sqlite3.IntegrityError:
+                # Concurrent request reserved or inserted with this key at the exact same moment
+                for _ in range(30):
+                    time.sleep(0.1)
+                    existing = db.get_invoice_by_idempotency_key(idempotency_key)
+                    if existing and existing.get("last_status") != "CREATING":
+                        return jsonify(services.format_invoice_response(existing)), 200
+                existing = db.get_invoice_by_idempotency_key(idempotency_key)
+                if existing:
+                    return jsonify(services.format_invoice_response(existing)), 200
+                return jsonify({"error": "Duplicate submission in progress."}), 409
 
         # Step 1: Create invoice in PayPal
         try:
             paypal_invoice_id = paypal_client.create_invoice(data)
         except paypal_client.PayPalError as e:
             logger.error("PayPal create_invoice failed: %s", e)
+            if reserved_id:
+                db.delete_invoice(reserved_id)
             return jsonify({"error": f"Failed to create PayPal invoice: {e.message}"}), 502
 
         # Step 2: Send invoice via PayPal
@@ -143,23 +204,31 @@ def create_app() -> Flask:
             raw_status = "SENT"
         except paypal_client.PayPalError as send_err:
             logger.error("PayPal send_invoice failed after draft created: %s", send_err)
-            # Store draft locally so work is not lost
-            draft_record = {
-                "idempotency_key": idempotency_key,
-                "paypal_invoice_id": paypal_invoice_id,
-                "invoice_number": None,
-                "client_name": data["client_name"].strip(),
-                "client_email": data["client_email"].strip(),
-                "currency": data.get("currency", "USD").upper(),
-                "total": total,
-                "due_date": data.get("due_date"),
-                "source_text": data.get("source_text"),
-                "extracted_json": data,
-                "ai_mode": data.get("ai_mode", "ai"),
-                "recipient_url": None,
-                "last_status": "DRAFT",
-            }
-            db.insert_invoice(draft_record)
+            if reserved_id:
+                db.update_invoice_paypal_info(
+                    reserved_id,
+                    paypal_invoice_id=paypal_invoice_id,
+                    raw_status="DRAFT",
+                    recipient_url=None,
+                    invoice_number=None,
+                )
+            else:
+                draft_record = {
+                    "idempotency_key": idempotency_key,
+                    "paypal_invoice_id": paypal_invoice_id,
+                    "invoice_number": None,
+                    "client_name": data["client_name"].strip(),
+                    "client_email": data["client_email"].strip(),
+                    "currency": data.get("currency", "USD").upper(),
+                    "total": total,
+                    "due_date": data.get("due_date"),
+                    "source_text": data.get("source_text"),
+                    "extracted_json": data,
+                    "ai_mode": data.get("ai_mode", "ai"),
+                    "recipient_url": None,
+                    "last_status": "DRAFT",
+                }
+                db.insert_invoice(draft_record)
             db.upsert_client(data["client_name"], data["client_email"])
             return jsonify({"error": f"PayPal draft {paypal_invoice_id} created, but failed to send: {send_err.message}"}), 502
 
@@ -173,23 +242,34 @@ def create_app() -> Flask:
         except Exception as get_err:
             logger.warning("Could not fetch invoice details immediately after send: %s", get_err)
 
-        # Step 4: Persist locally in SQLite
-        saved_record = {
-            "idempotency_key": idempotency_key,
-            "paypal_invoice_id": paypal_invoice_id,
-            "invoice_number": invoice_number,
-            "client_name": data["client_name"].strip(),
-            "client_email": data["client_email"].strip(),
-            "currency": data.get("currency", "USD").upper(),
-            "total": total,
-            "due_date": data.get("due_date"),
-            "source_text": data.get("source_text"),
-            "extracted_json": data,
-            "ai_mode": data.get("ai_mode", "ai"),
-            "recipient_url": payer_url,
-            "last_status": raw_status,
-        }
-        local_id = db.insert_invoice(saved_record)
+        # Step 4: Persist or update locally in SQLite
+        if reserved_id:
+            db.update_invoice_paypal_info(
+                reserved_id,
+                paypal_invoice_id=paypal_invoice_id,
+                raw_status=raw_status,
+                recipient_url=payer_url,
+                invoice_number=invoice_number,
+            )
+            local_id = reserved_id
+        else:
+            saved_record = {
+                "idempotency_key": idempotency_key,
+                "paypal_invoice_id": paypal_invoice_id,
+                "invoice_number": invoice_number,
+                "client_name": data["client_name"].strip(),
+                "client_email": data["client_email"].strip(),
+                "currency": data.get("currency", "USD").upper(),
+                "total": total,
+                "due_date": data.get("due_date"),
+                "source_text": data.get("source_text"),
+                "extracted_json": data,
+                "ai_mode": data.get("ai_mode", "ai"),
+                "recipient_url": payer_url,
+                "last_status": raw_status,
+            }
+            local_id = db.insert_invoice(saved_record)
+
         db.upsert_client(data["client_name"], data["client_email"])
 
         created_invoice = db.get_invoice(local_id)
@@ -328,7 +408,7 @@ def create_app() -> Flask:
         subject = data.get("subject", "").strip()
         note = data.get("note", "").strip()
         tone = data.get("tone")
-        ai_mode = data.get("ai_mode", "fallback")
+        ai_mode = data.get("ai_mode") or "ai"
 
         # Auto-draft if subject or note was not provided
         if not subject or not note:
@@ -336,7 +416,7 @@ def create_app() -> Flask:
             subject = subject or auto_draft["subject"]
             note = note or auto_draft["note"]
             tone = tone or auto_draft["tone"]
-            ai_mode = auto_draft.get("ai_mode", "fallback")
+            ai_mode = auto_draft.get("ai_mode") or "ai"
 
         paypal_id = row.get("paypal_invoice_id")
         if paypal_id:
@@ -375,6 +455,7 @@ def create_app() -> Flask:
             "subject": subject,
             "note": note,
             "tone": tone,
+            "ai_mode": ai_mode,
             "sent_at": now_iso,
         }), 200
 

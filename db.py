@@ -207,6 +207,42 @@ def update_invoice_status(
         conn.close()
 
 
+def delete_invoice(invoice_id: int, db_path: Optional[str] = None) -> None:
+    """Delete an invoice record by local ID (e.g. rolling back an uncompleted reservation)."""
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+    finally:
+        conn.close()
+
+
+def update_invoice_paypal_info(
+    invoice_id: int,
+    paypal_invoice_id: Optional[str],
+    raw_status: str,
+    recipient_url: Optional[str] = None,
+    invoice_number: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> None:
+    """Update PayPal-related identifiers, status, and URL on an invoice record."""
+    conn = get_connection(db_path)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE invoices
+                SET paypal_invoice_id = ?, last_status = ?, recipient_url = ?,
+                    invoice_number = ?, last_synced_at = ?
+                WHERE id = ?
+                """,
+                (paypal_invoice_id, raw_status, recipient_url, invoice_number, now_iso, invoice_id),
+            )
+    finally:
+        conn.close()
+
+
 def set_demo_due_override(
     invoice_id: int,
     override_date: str,

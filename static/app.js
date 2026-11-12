@@ -8,6 +8,8 @@ let sourceText = "";
 let aiMode = "ai";
 let idempotencyKey = null;
 let reminderInvoiceId = null;
+let currentReminderTone = null;
+let currentReminderAiMode = "ai";
 let busy = false;
 
 // ---------- small helpers ----------
@@ -348,6 +350,8 @@ async function onDraftReminder() {
   setMsg("reminder-msg", "Drafting...");
   try {
     const data = await api("POST", `/api/invoices/${reminderInvoiceId}/reminder-draft`, tone ? { tone } : {});
+    currentReminderTone = data.tone || tone || null;
+    currentReminderAiMode = data.ai_mode || "ai";
     $("r-subject").value = data.subject || "";
     $("r-note").value = data.note || "";
     const bits = [];
@@ -371,7 +375,12 @@ async function onSendReminder() {
   if (!confirm("Send this reminder to the client through PayPal?")) return;
   setMsg("reminder-msg", "Sending via PayPal...");
   try {
-    await api("POST", `/api/invoices/${reminderInvoiceId}/reminder-send`, { subject, note });
+    await api("POST", `/api/invoices/${reminderInvoiceId}/reminder-send`, {
+      subject,
+      note,
+      tone: currentReminderTone,
+      ai_mode: currentReminderAiMode,
+    });
     setMsg("reminder-msg", "Reminder sent.", "ok");
     await loadReminderHistory(reminderInvoiceId);
   } catch (err) {
