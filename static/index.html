@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BillPilot (test UI)</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>BillPilot <small>basic test UI</small></h1>
+    <div id="health" class="muted">Checking backend...</div>
+  </header>
+
+  <!-- 1. Sentence input -->
+  <section>
+    <h2>1. Describe the invoice</h2>
+    <textarea id="sentence" rows="2" placeholder="Invoice Ravi $500 for logo design, due Friday"></textarea>
+    <div class="row">
+      <button id="btn-extract">Extract</button>
+      <button type="button" class="chip" data-example="Invoice Ravi $500 for logo design, due Friday">Example 1</button>
+      <button type="button" class="chip" data-example="Bill Asha 3 hours of tutoring at $20 per hour, due in 10 days">Example 2</button>
+      <button type="button" class="chip" data-example="Invoice Mehta Traders $1200 for website, 2 revisions $50 each, due Nov 30">Example 3</button>
+    </div>
+    <div id="extract-msg" class="msg"></div>
+  </section>
+
+  <!-- 2. Preview and confirm -->
+  <section id="preview" hidden>
+    <h2>2. Preview (check, edit, then confirm)</h2>
+    <div id="preview-notices"></div>
+    <div class="grid">
+      <label>Client name <input id="p-name"></label>
+      <label>Client email <input id="p-email" type="email" placeholder="sandbox personal account email"></label>
+      <label>Currency <input id="p-currency" size="4"></label>
+      <label>Due date <input id="p-due" type="date"></label>
+    </div>
+    <label>Note <input id="p-note"></label>
+
+    <div class="items-head">Items (name, qty, unit price)</div>
+    <div id="items"></div>
+    <button type="button" id="btn-add-item" class="chip">+ Add item</button>
+    <div class="total">Total: <strong id="p-total">0.00</strong></div>
+
+    <div class="row">
+      <button id="btn-create">Create &amp; Send via PayPal</button>
+      <button id="btn-cancel" type="button" class="secondary">Cancel</button>
+    </div>
+    <div id="create-msg" class="msg"></div>
+  </section>
+
+  <!-- 3. Dashboard -->
+  <section>
+    <h2>3. Invoices</h2>
+    <div class="row">
+      <button id="btn-refresh">Refresh</button>
+      <span id="list-msg" class="msg"></span>
+    </div>
+    <div id="summary" class="cards"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Number</th><th>Client</th><th>Total</th><th>Due</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="invoice-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 4. Reminder panel -->
+  <section id="reminder" hidden>
+    <h2>4. Reminder for invoice <span id="r-id"></span></h2>
+    <div class="row">
+      <label>Tone
+        <select id="r-tone">
+          <option value="">auto (by days overdue)</option>
+          <option value="friendly">friendly</option>
+          <option value="firm">firm</option>
+          <option value="final">final</option>
+        </select>
+      </label>
+      <button id="btn-draft">Draft reminder</button>
+      <button id="btn-close-reminder" type="button" class="secondary">Close</button>
+    </div>
+    <div id="r-meta" class="muted"></div>
+    <label>Subject <input id="r-subject"></label>
+    <label>Message <textarea id="r-note" rows="5"></textarea></label>
+    <button id="btn-send-reminder">Send via PayPal (after your approval)</button>
+    <div id="reminder-msg" class="msg"></div>
+  </section>
+
+  <!-- 5. Debug log -->
+  <section>
+    <h2>Debug log <small>(last requests and responses)</small></h2>
+    <button id="btn-clear-log" type="button" class="secondary">Clear</button>
+    <pre id="log"></pre>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
