@@ -5,6 +5,7 @@ Encapsulates:
   - Overdue derivation based on effective due date and current date
   - Extraction validation adhering to financial and format constraints
   - Fallback deterministic regex parser for offline / unconfigured operation
+  - Invoice response formatting and dashboard summary calculations
 """
 
 import re
@@ -126,14 +127,7 @@ def parse_fallback_extraction(
     today: Optional[str] = None,
     default_currency: str = "USD",
 ) -> Dict[str, Any]:
-    """Deterministic regex extraction fallback for common freelancer invoicing sentences.
-    
-    Handles:
-      - 'Invoice <Client> $<amount> for <item>, due <date>'
-      - 'Bill <Client> <qty> <unit> of <item> at $<price> per hour, due <date>'
-      - Multi-item syntax like '... $1200 for website, 2 revisions $50 each, due Nov 30'
-      - Sentences with missing due dates or missing emails
-    """
+    """Deterministic regex extraction fallback for common freelancer invoicing sentences."""
     raw = text.strip()
     ref_today = today or date.today().isoformat()
 
@@ -162,8 +156,7 @@ def parse_fallback_extraction(
     client_name = None
     items: List[Dict[str, Any]] = []
 
-    # Check hourly/quantity rate pattern:
-    # "Bill Asha 3 hours of tutoring at $20 per hour"
+    # Check hourly/quantity rate pattern: "Bill Asha 3 hours of tutoring at $20 per hour"
     m_rate = re.match(
         r"^(?:bill|invoice)\s+([A-Za-z0-9\s]+?)\s+(\d+)\s+([A-Za-z]+)\s+of\s+(.+?)\s+at\s+\$?(\d+(?:\.\d+)?)(?:\s+per\s+[A-Za-z]+)?$",
         first_part,
@@ -179,8 +172,7 @@ def parse_fallback_extraction(
             "unit_price": float(price_str),
         })
     else:
-        # Check standard pattern:
-        # "Invoice Ravi $500 for logo design" or "Invoice Mehta Traders $1200 for website"
+        # Check standard pattern: "Invoice Ravi $500 for logo design"
         m_std = re.match(
             r"^(?:invoice|bill)\s+([A-Za-z0-9\s]+?)\s+\$?(\d+(?:\.\d+)?)(?:\s+for\s+(.+))?$",
             first_part,
@@ -306,7 +298,7 @@ def validate_extraction(data: Dict[str, Any], today: Optional[str] = None) -> Li
         except (ValueError, TypeError):
             errors.append("Due date must be in YYYY-MM-DD format.")
 
-    # 5. Validate Email (if present; missing email is not an error)
+    # 5. Validate Email (if present; missing email is not an error here)
     email = data.get("client_email")
     if email:
         email_clean = str(email).strip()
@@ -321,3 +313,67 @@ def validate_extraction(data: Dict[str, Any], today: Optional[str] = None) -> Li
         errors.append("Note cannot exceed 500 characters.")
 
     return errors
+
+
+def format_invoice_response(
+    inv: Dict[str, Any],
+    stale: bool = False,
+    today: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Format an internal invoice record into the contract schema."""
+    effective_due = compute_effective_due_date(inv.get("due_date"), inv.get("demo_due_override"))
+    status = map_status(inv.get("last_status"), effective_due, today=today)
+
+    return {
+        "id": inv["id"],
+        "paypal_invoice_id": inv.get("paypal_invoice_id"),
+        "invoice_number": inv.get("invoice_number") or str(inv["id"]),
+        "client_name": inv["client_name"],
+        "client_email": inv.get("client_email"),
+        "total": float(inv.get("total", 0.0)),
+        "currency": inv.get("currency", "USD"),
+        "due_date": inv.get("due_date"),
+        "demo_due_override": inv.get("demo_due_override"),
+        "status": status,
+        "recipient_url": inv.get("recipient_url"),
+        "ai_mode": inv.get("ai_mode", "ai"),
+        "stale": bool(stale),
+    }
+
+
+def compute_summary(invoices: List[Dict[str, Any]], today: Optional[str] = None) -> Dict[str, Any]:
+    """Calculate flat financial dashboard summary metrics.
+    
+    Cancelled invoices do not count toward billed or outstanding.
+    """
+    total_billed = 0.0
+    total_collected = 0.0
+    total_outstanding = 0.0
+    overdue_count = 0
+    valid_invoice_count = 0
+
+    for inv in invoices:
+        effective_due = compute_effective_due_date(inv.get("due_date"), inv.get("demo_due_override"))
+        status = map_status(inv.get("last_status"), effective_due, today=today)
+        total = float(inv.get("total", 0.0))
+
+        if status == "Cancelled":
+            continue
+
+        valid_invoice_count += 1
+        total_billed += total
+
+        if status == "Paid":
+            total_collected += total
+        elif status in ("Unpaid", "Overdue"):
+            total_outstanding += total
+            if status == "Overdue":
+                overdue_count += 1
+
+    return {
+        "invoice_count": valid_invoice_count,
+        "total_billed": round(total_billed, 2),
+        "total_collected": round(total_collected, 2),
+        "total_outstanding": round(total_outstanding, 2),
+        "overdue_count": overdue_count,
+    }

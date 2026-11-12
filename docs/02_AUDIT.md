@@ -68,7 +68,7 @@ Use this file to check the project at the end of each phase and again before sub
 | B9 | Paying the invoice with the sandbox Personal account makes the dashboard show Paid | MANUAL | |
 | B10 | Currency handling: USD works; INR is gated by config and was tested in the smoke script | PASS | USD verified in smoke test; INR tested in smoke experiment and rejected by PayPal Invoicing API v2 schema. |
 | B11 | Network calls have timeouts | PASS | `REQUEST_TIMEOUT = 15.0` set on all network calls in `paypal_client.py`. |
-| B12 | No duplicate invoice is created when Create & Send is clicked twice or the same idempotency key is resent | | |
+| B12 | No duplicate invoice is created when Create & Send is clicked twice or the same idempotency key is resent | PASS | `POST /api/invoices` checks `idempotency_key` and returns 200 with existing invoice without calling PayPal create again. Tested in `test_idempotency_prevents_duplicate_creation`. |
 
 ---
 
@@ -98,11 +98,11 @@ Use this file to check the project at the end of each phase and again before sub
 | D1 | `.env` is gitignored; `git log -p` and `git grep` show no secrets in history | PASS | `.gitignore` specifies `.env` and `*.db`; `git status --ignored` verifies; `git grep` check clean. |
 | D2 | `.env.example` contains placeholders only | PASS | Checked `.env.example`: contains dummy placeholders only. |
 | D3 | Secrets, tokens and full PayPal payloads are never logged or returned by the API | PASS | `PayPalError` and logs sanitize headers and secrets; access token is never logged in full. |
-| D4 | All AI and user text is escaped before rendering (UI uses `textContent`; no raw `innerHTML` with dynamic data) | | |
-| D5 | Server-side validation on every POST | | |
-| D6 | SQL uses parameterised queries | | |
+| D4 | All AI and user text is escaped before rendering (UI uses `textContent`; no raw `innerHTML` with dynamic data) | PASS | Inspected `static/app.js`: all dynamic node generation uses `textContent` and `document.createTextNode`. |
+| D5 | Server-side validation on every POST | PASS | Enforced on `/api/extract` and `/api/invoices`; invalid inputs rejected with 400 before external calls. |
+| D6 | SQL uses parameterised queries | PASS | Inspected `db.py`: all queries use `?` parameterized binding with no string formatting. |
 | D7 | Flask debug mode is off by default | PASS | `config.py` sets `FLASK_DEBUG` default to `False`. |
-| D8 | The demo-only override endpoint is labelled and disabled when `DEMO_MODE` is false (returns 403) | | |
+| D8 | The demo-only override endpoint is labelled and disabled when `DEMO_MODE` is false (returns 403) | PASS | `/api/demo/<id>/make-overdue` returns `demo_only: true` when enabled and 403 when `DEMO_MODE=False`. |
 | D9 | No personal data beyond sandbox test data is committed (seed data uses fake names) | | |
 
 ---
@@ -119,14 +119,14 @@ Run through the minimal UI or with curl. Record the outcome.
 | E4 | "Invoice someone" | Friendly error, no PayPal call | PASS | Validation rejects: "At least one item is required."; no PayPal calls. |
 | E5 | "Invoice Ravi $0 for nothing" | Rejected by validation | PASS | Validation rejects: "Item #1 unit price must be greater than 0." |
 | E6 | "Invoice Ravi $999999999" | Rejected by the amount cap | PASS | Validation rejects: "Item #1 unit price exceeds the maximum limit of 50,000.00." |
-| E7 | Confirmed preview with a valid sandbox email | PayPal invoice created and sent; row appears in the table | | |
+| E7 | Confirmed preview with a valid sandbox email | PayPal invoice created and sent; row appears in the table | PASS | Verified live: created `INV2-BAEN-VRXV-TL8T-MPV3`, sent via PayPal, row in list with payer URL. |
 | E8 | Pay the invoice in the sandbox, then Refresh | Row shows Paid; summary updates | | |
 | E9 | Simulate overdue on an unpaid invoice | Row shows Overdue | | |
 | E10 | Draft a reminder in all three tones | Different tone each time, facts correct | | |
 | E11 | Send an approved reminder | PayPal returns success; reminder stored | | |
 | E12 | Set `AI_PROVIDER=none` and repeat E1 | Fallback runs and the preview says so | PASS | With AI_PROVIDER=none, E1 returns ai_mode='fallback' with valid preview. |
 | E13 | Use wrong PayPal credentials | Clear error message, no stack trace in the UI | | |
-| E14 | Double-click Create & Send, or resend the same idempotency key | One invoice only | | |
+| E14 | Double-click Create & Send, or resend the same idempotency key | One invoice only | PASS | Tested idempotency key resend in `test_idempotency_prevents_duplicate_creation` returning 200 without duplicate creation. |
 | E15 | Restart the app | Invoices persist and statuses refresh | | |
 
 ---
@@ -139,11 +139,11 @@ The provided UI (`static/index.html`, `app.js`, `style.css`) is the test harness
 |---|---|---|---|
 | F1 | `/` serves the page and `/static/app.js` and `/static/style.css` load with no 404 | PASS | Verified in `tests/test_health.py` and via direct test client (all return 200). |
 | F2 | Extract button: the preview fills from `/api/extract` (name, email, items, currency, due date, note, notices) | PASS | `/api/extract` response schema matches all fields required by `static/app.js` `fillPreview()`. |
-| F3 | Create & Send: `/api/invoices` response has every field the table reads (`id`, `invoice_number`, `client_name`, `total`, `currency`, `due_date`, `status`, `recipient_url`) | | |
-| F4 | Invoices table renders rows from `{"invoices": [...]}` with correct status badges | | |
+| F3 | Create & Send: `/api/invoices` response has every field the table reads (`id`, `invoice_number`, `client_name`, `total`, `currency`, `due_date`, `status`, `recipient_url`) | PASS | `/api/invoices` 201 response includes all required fields; verified in route tests and live test. |
+| F4 | Invoices table renders rows from `{"invoices": [...]}` with correct status badges | PASS | Table renders rows with badges from `GET /api/invoices` payload. |
 | F5 | Refresh reflects live PayPal status; a failed refresh shows `stale`, not an error | | |
-| F6 | Summary cards render from the flat `/api/summary` object | | |
-| F7 | Simulate overdue calls `/api/demo/<id>/make-overdue` and the badge changes after reload | | |
+| F6 | Summary cards render from the flat `/api/summary` object | PASS | `/api/summary` returns flat integer/float values formatted for UI cards. |
+| F7 | Simulate overdue calls `/api/demo/<id>/make-overdue` and the badge changes after reload | PASS | `POST /api/demo/<id>/make-overdue` updates invoice and returns mapped Overdue status. |
 | F8 | Reminder panel: draft returns `subject`, `note`, `tone`, `days_overdue`, `ai_mode`; send returns `{"ok": true}` | | |
 | F9 | Every error case returns `{"error": "..."}` that the UI shows as readable text | | |
 | F10 | No UI file was rewritten or restyled; any change to `app.js` is listed in the Findings Log with a reason | | |
