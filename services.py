@@ -336,6 +336,8 @@ def format_invoice_response(
         "demo_due_override": inv.get("demo_due_override"),
         "status": status,
         "recipient_url": inv.get("recipient_url"),
+        "payer_url": inv.get("recipient_url"),
+        "payer_view_url": inv.get("recipient_url"),
         "ai_mode": inv.get("ai_mode", "ai"),
         "stale": bool(stale),
     }

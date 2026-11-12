@@ -60,6 +60,13 @@ function safeUrl(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
 }
 
+// Strict PayPal Sandbox payer URL validator: requires valid https://www.sandbox.paypal.com/invoice/p/#... format
+function safeSandboxPayerUrl(url) {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  return /^https:\/\/www\.sandbox\.paypal\.com\/invoice\/p\/#[A-Za-z0-9_-]+/i.test(trimmed) ? trimmed : null;
+}
+
 function setMsg(id, text, kind = "") {
   const el = $(id);
   if (!el) return;
@@ -437,11 +444,12 @@ function renderFilteredInvoices() {
   for (const inv of filtered) {
     const status = inv.status || inv.last_status || "";
     const lower = String(status).toLowerCase();
-    const payUrl = safeUrl(inv.recipient_url || inv.payer_url);
+    const rawPayUrl = inv.payer_url || inv.payer_view_url || inv.recipient_url || inv.recipient_view_url;
+    const payUrl = safeSandboxPayerUrl(rawPayUrl);
 
     const actions = h("div", { class: "row-actions" });
 
-    // Pay link opens payer_url in new tab
+    // Pay link opens payer_url in new tab (hidden/disabled if no valid PayPal sandbox URL is present)
     if (payUrl) {
       actions.append(
         h("a", {
