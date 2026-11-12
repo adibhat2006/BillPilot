@@ -95,13 +95,13 @@ Use this file to check the project at the end of each phase and again before sub
 
 | # | Check | Result | Evidence |
 |---|---|---|---|
-| D1 | `.env` is gitignored; `git log -p` and `git grep` show no secrets in history | | |
-| D2 | `.env.example` contains placeholders only | | |
+| D1 | `.env` is gitignored; `git log -p` and `git grep` show no secrets in history | PASS | `.gitignore` specifies `.env` and `*.db`; `git status --ignored` verifies; `git grep` check clean. |
+| D2 | `.env.example` contains placeholders only | PASS | Checked `.env.example`: contains dummy placeholders only. |
 | D3 | Secrets, tokens and full PayPal payloads are never logged or returned by the API | | |
 | D4 | All AI and user text is escaped before rendering (UI uses `textContent`; no raw `innerHTML` with dynamic data) | | |
 | D5 | Server-side validation on every POST | | |
 | D6 | SQL uses parameterised queries | | |
-| D7 | Flask debug mode is off by default | | |
+| D7 | Flask debug mode is off by default | PASS | `config.py` sets `FLASK_DEBUG` default to `False`. |
 | D8 | The demo-only override endpoint is labelled and disabled when `DEMO_MODE` is false (returns 403) | | |
 | D9 | No personal data beyond sandbox test data is committed (seed data uses fake names) | | |
 
@@ -137,7 +137,7 @@ The provided UI (`static/index.html`, `app.js`, `style.css`) is the test harness
 
 | # | Check | Result | Evidence |
 |---|---|---|---|
-| F1 | `/` serves the page and `/static/app.js` and `/static/style.css` load with no 404 | | |
+| F1 | `/` serves the page and `/static/app.js` and `/static/style.css` load with no 404 | PASS | Verified in `tests/test_health.py` and via direct test client (all return 200). |
 | F2 | Extract button: the preview fills from `/api/extract` (name, email, items, currency, due date, note, notices) | | |
 | F3 | Create & Send: `/api/invoices` response has every field the table reads (`id`, `invoice_number`, `client_name`, `total`, `currency`, `due_date`, `status`, `recipient_url`) | | |
 | F4 | Invoices table renders rows from `{"invoices": [...]}` with correct status badges | | |
@@ -154,8 +154,8 @@ The provided UI (`static/index.html`, `app.js`, `style.css`) is the test harness
 
 | # | Check | Result | Evidence |
 |---|---|---|---|
-| G1 | `requirements.txt` pins versions and installs cleanly in a fresh venv | | |
-| G2 | `python app.py` (or the documented command) starts with only `.env` filled in | | |
+| G1 | `requirements.txt` pins versions and installs cleanly in a fresh venv | PASS | Installed into `.venv` with `pip install -r requirements.txt` cleanly with pinned versions. |
+| G2 | `python app.py` (or the documented command) starts with only `.env` filled in | PASS | Tested running with default/empty `.env`; app starts cleanly with 200 health check. |
 | G3 | Tests run with one documented command and pass | | |
 | G4 | No dead code, stray debug prints or TODOs on the main path | | |
 | G5 | Folder structure matches the plan | | |
