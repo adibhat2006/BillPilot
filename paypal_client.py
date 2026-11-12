@@ -281,6 +281,11 @@ def send_invoice(invoice_id: str) -> Optional[str]:
         except Exception:
             pass
 
+    # Reliable fallback to standard PayPal sandbox payer view URL format
+    if not payer_url:
+        clean_id = invoice_id.strip()
+        payer_url = f"{SANDBOX_BASE_URL.replace('api-m.', 'www.')}/invoice/p/#{clean_id}"
+
     return payer_url
 
 
@@ -323,6 +328,8 @@ def get_invoice(invoice_id: str) -> Dict[str, Any]:
         total = 0.0
 
     payer_url = metadata.get("recipient_view_url") or _extract_payer_url_from_links(data.get("links", []))
+    if not payer_url:
+        payer_url = f"{SANDBOX_BASE_URL.replace('api-m.', 'www.')}/invoice/p/#{invoice_id}"
     due_date = detail.get("payment_term", {}).get("due_date")
 
     return {

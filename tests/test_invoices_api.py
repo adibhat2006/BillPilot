@@ -301,3 +301,89 @@ def test_summary_totals_exclude_cancelled(client):
     assert summary["total_collected"] == 100.0
     assert summary["total_outstanding"] == 200.0
     assert summary["overdue_count"] == 0
+
+
+def test_overdue_invoice_refreshes_to_paid_and_updates_summary(client):
+    """When a previously Overdue invoice is paid in PayPal, refresh marks it Paid and updates summary."""
+    # Seed an invoice that is Overdue (backdated demo_due_override)
+    inv_id = db.insert_invoice({
+        "paypal_invoice_id": "INV2-OVERDUE-PAID",
+        "invoice_number": "0088",
+        "client_name": "Overdue Payer",
+        "client_email": "payer@example.com",
+        "currency": "USD",
+        "total": 450.0,
+        "due_date": "2026-11-20",
+        "demo_due_override": "2026-10-15",
+        "last_status": "SENT",
+    })
+
+    # Prior to payment, verify summary shows it as overdue and outstanding
+    sum_before = client.get("/api/summary").get_json()
+    assert sum_before["overdue_count"] == 1
+    assert sum_before["total_outstanding"] == 450.0
+    assert sum_before["total_collected"] == 0.0
+
+    # Mock PayPal returning PAID for this invoice
+    with patch("paypal_client.get_invoice", return_value={
+        "id": "INV2-OVERDUE-PAID",
+        "invoice_number": "0088",
+        "raw_status": "PAID",
+        "total": 450.0,
+        "currency": "USD",
+        "payer_url": "https://payer-url"
+    }):
+        res = client.get("/api/invoices")
+        assert res.status_code == 200
+        invoices = res.get_json()["invoices"]
+        assert len(invoices) == 1
+        # Mapped status must now be Paid despite the past demo_due_override
+        assert invoices[0]["status"] == "Paid"
+        assert invoices[0]["stale"] is False
+
+    # Check updated summary
+    sum_after = client.get("/api/summary").get_json()
+    assert sum_after["overdue_count"] == 0
+    assert sum_after["total_outstanding"] == 0.0
+    assert sum_after["total_collected"] == 450.0
+    assert sum_after["total_billed"] == 450.0
+
+
+def test_refresh_failure_sets_stale_flag_not_error(client):
+    """Failed live refresh marks invoice as stale rather than crashing GET /api/invoices."""
+    db.insert_invoice({
+        "paypal_invoice_id": "INV2-UNREACHABLE",
+        "invoice_number": "0099",
+        "client_name": "Ghost Client",
+        "client_email": "ghost@example.com",
+        "currency": "USD",
+        "total": 250.0,
+        "due_date": "2026-11-30",
+        "last_status": "SENT",
+    })
+
+    with patch("paypal_client.get_invoice", side_effect=paypal_client.PayPalError("Network down", status_code=503)):
+        res = client.get("/api/invoices")
+        assert res.status_code == 200
+        invoices = res.get_json()["invoices"]
+        assert len(invoices) == 1
+        assert invoices[0]["status"] == "Unpaid"
+        assert invoices[0]["stale"] is True
+
+
+def test_bad_paypal_credentials_error_message(client):
+    """Invalid PayPal credentials return clear JSON error without stack traces."""
+    with patch("paypal_client.create_invoice", side_effect=paypal_client.PayPalError("Invalid client credentials", status_code=401)):
+        payload = {
+            "client_name": "Auth Failure",
+            "client_email": "auth@example.com",
+            "items": [{"name": "Item", "quantity": 1, "unit_price": 50.0}],
+            "currency": "USD",
+        }
+        res = client.post("/api/invoices", json=payload)
+        assert res.status_code == 502
+        body = res.get_json()
+        assert "error" in body
+        assert "Failed to create PayPal invoice: Invalid client credentials" in body["error"]
+        assert "Traceback" not in str(body)
+
