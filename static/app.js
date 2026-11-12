@@ -316,7 +316,7 @@ async function simulateOverdue(id) {
 
 // ---------- step 4: reminders ----------
 
-function openReminder(id) {
+async function openReminder(id) {
   reminderInvoiceId = id;
   $("r-id").textContent = "#" + id;
   $("r-subject").value = "";
@@ -325,6 +325,22 @@ function openReminder(id) {
   setMsg("reminder-msg", "");
   $("reminder").hidden = false;
   $("reminder").scrollIntoView({ behavior: "smooth" });
+  await onDraftReminder();
+  await loadReminderHistory(id);
+}
+
+async function loadReminderHistory(id) {
+  try {
+    const data = await api("GET", `/api/invoices/${id}/reminders`);
+    const list = data.reminders || [];
+    if (list.length > 0) {
+      const existing = $("r-meta").textContent;
+      const historyStr = `${list.length} reminder(s) sent previously`;
+      $("r-meta").textContent = existing ? `${existing} | ${historyStr}` : historyStr;
+    }
+  } catch {
+    // history display is optional
+  }
 }
 
 async function onDraftReminder() {
@@ -357,6 +373,7 @@ async function onSendReminder() {
   try {
     await api("POST", `/api/invoices/${reminderInvoiceId}/reminder-send`, { subject, note });
     setMsg("reminder-msg", "Reminder sent.", "ok");
+    await loadReminderHistory(reminderInvoiceId);
   } catch (err) {
     setMsg("reminder-msg", err.message, "error");
   }

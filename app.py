@@ -292,6 +292,114 @@ def create_app() -> Flask:
         """Simulate overdue status (endpoint alias)."""
         return _handle_make_overdue(invoice_id)
 
+    @app.route("/api/invoices/<int:invoice_id>/reminder-draft", methods=["POST"])
+    def reminder_draft(invoice_id: int):
+        """Generate a contextual payment reminder draft for human approval."""
+        row = db.get_invoice(invoice_id)
+        if not row:
+            return jsonify({"error": "Invoice not found."}), 404
+
+        raw_status = (row.get("last_status") or "").strip().upper()
+        if raw_status in ("PAID", "MARKED_AS_PAID", "CANCELLED", "CANCELED"):
+            return jsonify({"error": "Cannot draft a reminder for a paid or cancelled invoice."}), 400
+
+        data = request.get_json(silent=True) or {}
+        requested_tone = data.get("tone")
+
+        draft = ai_client.draft_reminder(row, tone=requested_tone)
+        return jsonify(draft), 200
+
+    def _handle_send_reminder(invoice_id: int):
+        """Shared logic for sending an approved payment reminder via PayPal."""
+        row = db.get_invoice(invoice_id)
+        if not row:
+            return jsonify({"error": "Invoice not found."}), 404
+
+        raw_status = (row.get("last_status") or "").strip().upper()
+        if raw_status in ("PAID", "MARKED_AS_PAID", "CANCELLED", "CANCELED"):
+            return jsonify({"error": "Cannot send a reminder for a paid or cancelled invoice."}), 400
+
+        # Enforce rate limit of 2 reminders per invoice per day
+        sent_today = db.count_daily_reminders(invoice_id)
+        if sent_today >= 2:
+            return jsonify({"error": "Daily reminder limit reached (maximum 2 reminders per day per invoice)."}), 429
+
+        data = request.get_json(silent=True) or {}
+        subject = data.get("subject", "").strip()
+        note = data.get("note", "").strip()
+        tone = data.get("tone")
+        ai_mode = data.get("ai_mode", "fallback")
+
+        # Auto-draft if subject or note was not provided
+        if not subject or not note:
+            auto_draft = ai_client.draft_reminder(row, tone=tone)
+            subject = subject or auto_draft["subject"]
+            note = note or auto_draft["note"]
+            tone = tone or auto_draft["tone"]
+            ai_mode = auto_draft.get("ai_mode", "fallback")
+
+        paypal_id = row.get("paypal_invoice_id")
+        if paypal_id:
+            try:
+                paypal_client.remind_invoice(paypal_id, subject, note)
+            except paypal_client.PayPalError as e:
+                logger.error("PayPal remind failed for invoice %s (%s): %s", invoice_id, paypal_id, e)
+                db.insert_reminder(
+                    invoice_id=invoice_id,
+                    subject=subject,
+                    note=note,
+                    tone=tone,
+                    ai_mode=ai_mode,
+                    paypal_sent=False,
+                    status="FAILED",
+                )
+                return jsonify({"error": f"Failed to send reminder via PayPal: {e.message}"}), 502
+
+        rem_id = db.insert_reminder(
+            invoice_id=invoice_id,
+            subject=subject,
+            note=note,
+            tone=tone,
+            ai_mode=ai_mode,
+            paypal_sent=True,
+            status="SENT",
+        )
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        return jsonify({
+            "ok": True,
+            "id": rem_id,
+            "invoice_id": invoice_id,
+            "subject": subject,
+            "note": note,
+            "tone": tone,
+            "sent_at": now_iso,
+        }), 200
+
+    @app.route("/api/invoices/<int:invoice_id>/reminder-send", methods=["POST"])
+    def invoice_reminder_send(invoice_id: int):
+        """Send an approved reminder (called by minimal test UI app.js)."""
+        return _handle_send_reminder(invoice_id)
+
+    @app.route("/api/invoices/<int:invoice_id>/remind", methods=["POST"])
+    def invoice_remind(invoice_id: int):
+        """Send a reminder (endpoint alias with auto-drafting fallback)."""
+        return _handle_send_reminder(invoice_id)
+
+    @app.route("/api/invoices/<int:invoice_id>/reminders", methods=["GET"])
+    def get_invoice_reminders(invoice_id: int):
+        """Retrieve sent reminder history for an invoice."""
+        reminders = db.list_reminders(invoice_id=invoice_id)
+        return jsonify({"reminders": reminders}), 200
+
+    @app.route("/api/reminders", methods=["GET"])
+    def get_all_reminders():
+        """Retrieve all reminder history across all invoices."""
+        reminders = db.list_reminders()
+        return jsonify({"reminders": reminders}), 200
+
     @app.route("/api/summary", methods=["GET"])
     def get_summary():
         """Return flat financial summary cards from local invoices."""

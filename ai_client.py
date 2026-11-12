@@ -206,12 +206,140 @@ def extract_invoice(
     return parse_fallback_extraction(text, today=ref_today, default_currency=currency)
 
 
-def write_reminder(invoice_facts: Dict[str, Any], tone: Optional[str] = None) -> Dict[str, Any]:
-    """Draft a payment reminder email. Placeholder for Phase 5."""
+def build_template_reminder(
+    invoice: Dict[str, Any],
+    tone: str,
+    days_overdue: int,
+) -> Dict[str, str]:
+    """Generate deterministic reminder text based on tone and invoice facts."""
+    client_name = invoice.get("client_name") or "Valued Client"
+    invoice_number = invoice.get("invoice_number") or str(invoice.get("id", ""))
+    total = float(invoice.get("total", 0.0))
+    currency = invoice.get("currency", "USD")
+    due_date = invoice.get("due_date") or "the specified date"
+
+    if tone == "final":
+        subject = f"Final payment reminder: invoice {invoice_number} urgently due"
+        note = (
+            f"Dear {client_name},\n\n"
+            f"This is a final reminder that invoice {invoice_number} for {total:.2f} {currency} "
+            f"remains unpaid ({days_overdue} days past due, original due date {due_date}). "
+            f"Please settle this outstanding balance promptly.\n\n"
+            f"Sincerely,\nBillPilot"
+        )
+    elif tone == "firm":
+        subject = f"Payment reminder: invoice {invoice_number} is past due"
+        note = (
+            f"Hi {client_name},\n\n"
+            f"We noticed that invoice {invoice_number} for {total:.2f} {currency} "
+            f"is now {days_overdue} days past due (due date was {due_date}). "
+            f"Please remit payment at your earliest convenience to keep your account current.\n\n"
+            f"Thank you,\nBillPilot"
+        )
+    else:  # friendly
+        subject = f"Friendly reminder: invoice {invoice_number}"
+        note = (
+            f"Hi {client_name},\n\n"
+            f"Just a quick, friendly reminder that invoice {invoice_number} for {total:.2f} {currency} "
+            f"was due on {due_date}. Please let me know if you have any questions or when we can expect payment.\n\n"
+            f"Thank you,\nBillPilot"
+        )
+
+    return {"subject": subject, "note": note}
+
+
+def draft_reminder(invoice: Dict[str, Any], tone: Optional[str] = None) -> Dict[str, Any]:
+    """Draft a polite payment reminder email, returning {subject, note, tone, days_overdue, ai_mode}.
+    
+    Supports friendly, firm, and final tones with automatic tone selection by days overdue.
+    """
+    from services import compute_effective_due_date
+
+    effective_due = compute_effective_due_date(invoice.get("due_date"), invoice.get("demo_due_override"))
+    days_overdue = 0
+    if effective_due:
+        try:
+            d_due = date.fromisoformat(effective_due.strip())
+            diff = (date.today() - d_due).days
+            days_overdue = max(0, diff)
+        except Exception:
+            days_overdue = 0
+
+    # Auto tone selection by days overdue if tone not explicitly provided
+    selected_tone = (tone or "").strip().lower()
+    if selected_tone not in ("friendly", "firm", "final"):
+        if days_overdue <= 7:
+            selected_tone = "friendly"
+        elif days_overdue <= 20:
+            selected_tone = "firm"
+        else:
+            selected_tone = "final"
+
+    provider = config.AI_PROVIDER.strip().lower()
+
+    # Fallback template if provider is 'none' or unconfigured
+    if provider == "none" or not config.AI_API_KEY.strip() or config.AI_API_KEY == "your_ai_api_key_here":
+        template = build_template_reminder(invoice, selected_tone, days_overdue)
+        return {
+            "subject": template["subject"],
+            "note": template["note"],
+            "tone": selected_tone,
+            "days_overdue": days_overdue,
+            "ai_mode": "fallback",
+        }
+
+    client_name = invoice.get("client_name") or "Valued Client"
+    inv_num = invoice.get("invoice_number") or str(invoice.get("id", ""))
+    total = float(invoice.get("total", 0.0))
+    currency = invoice.get("currency", "USD")
+    due_date = invoice.get("due_date") or "the specified date"
+
+    system_prompt = (
+        "You are an empathetic, professional billing assistant writing an invoice payment reminder for a freelancer.\n"
+        f"Client: {client_name}\n"
+        f"Invoice Number: {inv_num}\n"
+        f"Amount: {total:.2f} {currency}\n"
+        f"Due Date: {due_date}\n"
+        f"Days Overdue: {days_overdue}\n"
+        f"Selected Tone: {selected_tone} (friendly / firm / final)\n\n"
+        "Rules:\n"
+        "1. Output valid RFC 8259 JSON with exact keys 'subject' and 'note'.\n"
+        "2. Keep the message polite, professional, and under 120 words.\n"
+        "3. Explicitly state invoice number, amount, currency, and due date.\n"
+        "4. NEVER include threats, legal assertions, or invented late fees.\n"
+    )
+
+    try:
+        if provider == "gemini":
+            raw = _call_gemini(system_prompt, f"Draft a {selected_tone} reminder for invoice {inv_num}")
+        elif provider == "anthropic":
+            raw = _call_anthropic(system_prompt, f"Draft a {selected_tone} reminder for invoice {inv_num}")
+        else:
+            raw = ""
+
+        cleaned = _clean_json_text(raw)
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and data.get("subject") and data.get("note"):
+            return {
+                "subject": str(data["subject"]).strip(),
+                "note": str(data["note"]).strip(),
+                "tone": selected_tone,
+                "days_overdue": days_overdue,
+                "ai_mode": "ai",
+            }
+    except Exception as e:
+        logger.warning("AI reminder generation failed: %s. Using template fallback.", e)
+
+    template = build_template_reminder(invoice, selected_tone, days_overdue)
     return {
-        "subject": f"Friendly reminder: invoice {invoice_facts.get('invoice_number', '')}",
-        "note": f"Hi {invoice_facts.get('client_name', 'Client')}, this is a reminder regarding your invoice.",
-        "tone": tone or "friendly",
-        "days_overdue": 0,
+        "subject": template["subject"],
+        "note": template["note"],
+        "tone": selected_tone,
+        "days_overdue": days_overdue,
         "ai_mode": "fallback",
     }
+
+
+def write_reminder(invoice_facts: Dict[str, Any], tone: Optional[str] = None) -> Dict[str, Any]:
+    """Compatibility alias for draft_reminder."""
+    return draft_reminder(invoice_facts, tone=tone)

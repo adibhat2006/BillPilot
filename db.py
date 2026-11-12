@@ -51,14 +51,26 @@ def init_db(db_path: Optional[str] = None) -> None:
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     invoice_id INTEGER NOT NULL,
+                    channel TEXT DEFAULT 'paypal_email',
                     tone TEXT,
                     subject TEXT NOT NULL,
                     note TEXT NOT NULL,
-                    ai_mode TEXT,
+                    ai_mode TEXT DEFAULT 'ai',
+                    paypal_sent INTEGER DEFAULT 1,
+                    status TEXT DEFAULT 'SENT',
                     sent_at TEXT NOT NULL,
                     FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
                 );
             """)
+
+            # Ensure any newly added columns exist in older database files
+            columns = [row["name"] for row in conn.execute("PRAGMA table_info(reminders)").fetchall()]
+            if "channel" not in columns:
+                conn.execute("ALTER TABLE reminders ADD COLUMN channel TEXT DEFAULT 'paypal_email';")
+            if "paypal_sent" not in columns:
+                conn.execute("ALTER TABLE reminders ADD COLUMN paypal_sent INTEGER DEFAULT 1;")
+            if "status" not in columns:
+                conn.execute("ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'SENT';")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS clients (
@@ -212,7 +224,89 @@ def set_demo_due_override(
         conn.close()
 
 
-# ---------------- Clients Repository ----------------
+# ---------------- Reminders Repository ----------------
+
+def insert_reminder(
+    invoice_id: int,
+    subject: str,
+    note: str,
+    tone: Optional[str] = None,
+    ai_mode: str = "ai",
+    channel: str = "paypal_email",
+    paypal_sent: bool = True,
+    status: str = "SENT",
+    db_path: Optional[str] = None,
+) -> int:
+    """Insert a reminder record and return its local ID."""
+    conn = get_connection(db_path)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO reminders (
+                    invoice_id, channel, tone, subject, note,
+                    ai_mode, paypal_sent, status, sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice_id,
+                    channel,
+                    tone,
+                    subject,
+                    note,
+                    ai_mode,
+                    1 if paypal_sent else 0,
+                    status,
+                    now_iso,
+                ),
+            )
+            return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def list_reminders(
+    invoice_id: Optional[int] = None,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve reminder records, optionally filtered by invoice_id, newest first."""
+    conn = get_connection(db_path)
+    try:
+        if invoice_id:
+            cursor = conn.execute(
+                "SELECT * FROM reminders WHERE invoice_id = ? ORDER BY id DESC",
+                (invoice_id,),
+            )
+        else:
+            cursor = conn.execute("SELECT * FROM reminders ORDER BY id DESC")
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_daily_reminders(
+    invoice_id: int,
+    day_str: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> int:
+    """Count how many reminders have been sent today for a given invoice."""
+    conn = get_connection(db_path)
+    day = day_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM reminders
+            WHERE invoice_id = ? AND date(sent_at) = ? AND paypal_sent = 1
+            """,
+            (invoice_id, day),
+        )
+        row = cursor.fetchone()
+        return int(row["count"]) if row else 0
+    finally:
+        conn.close()
+
 
 def upsert_client(name: str, email: Optional[str], db_path: Optional[str] = None) -> None:
     """Insert or update a client by name."""
