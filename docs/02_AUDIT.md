@@ -57,17 +57,17 @@ Use this file to check the project at the end of each phase and again before sub
 
 | # | Check | Result | Evidence |
 |---|---|---|---|
-| B1 | Only the sandbox base URL is used; no live credentials anywhere | | |
-| B2 | Token is fetched with client credentials and cached until near expiry | | |
-| B3 | Create invoice succeeds and returns an invoice ID | | |
-| B4 | Send invoice succeeds and the payer URL is stored | | |
-| B5 | Status is read from PayPal (GET or search), not guessed locally | | |
-| B6 | Status mapping matches the plan; Overdue is derived from the effective due date and an unpaid status; due today is not overdue | | |
-| B7 | PayPal error responses become readable messages and never crash the app | | |
+| B1 | Only the sandbox base URL is used; no live credentials anywhere | PASS | `paypal_client.SANDBOX_BASE_URL` hardcoded to `https://api-m.sandbox.paypal.com`. Verified clean grep. |
+| B2 | Token is fetched with client credentials and cached until near expiry | PASS | `get_access_token()` caches in `_cached_token` until expiry minus 60s. Verified in smoke test. |
+| B3 | Create invoice succeeds and returns an invoice ID | PASS | `create_invoice()` created `INV2-V58Y-ES58-CSVK-7VNX` in smoke test. |
+| B4 | Send invoice succeeds and the payer URL is stored | PASS | `send_invoice()` sent invoice and returned `https://www.sandbox.paypal.com/invoice/p/#INV2-V58Y-ES58-CSVK-7VNX`. |
+| B5 | Status is read from PayPal (GET or search), not guessed locally | PASS | `get_invoice()` and `list_invoices()` parse raw status from live sandbox responses. |
+| B6 | Status mapping matches the plan; Overdue is derived from the effective due date and an unpaid status; due today is not overdue | PASS | Tested all status scenarios in `tests/test_status_mapping.py` (9 tests pass). |
+| B7 | PayPal error responses become readable messages and never crash the app | PASS | `_parse_error_response()` extracts human-readable message/issues into `PayPalError`. |
 | B8 | Remind call works with the AI-drafted subject and note | | |
 | B9 | Paying the invoice with the sandbox Personal account makes the dashboard show Paid | MANUAL | |
-| B10 | Currency handling: USD works; INR is gated by config and was tested in the smoke script | | |
-| B11 | Network calls have timeouts | | |
+| B10 | Currency handling: USD works; INR is gated by config and was tested in the smoke script | PASS | USD verified in smoke test; INR tested in smoke experiment and rejected by PayPal Invoicing API v2 schema. |
+| B11 | Network calls have timeouts | PASS | `REQUEST_TIMEOUT = 15.0` set on all network calls in `paypal_client.py`. |
 | B12 | No duplicate invoice is created when Create & Send is clicked twice or the same idempotency key is resent | | |
 
 ---
@@ -97,7 +97,7 @@ Use this file to check the project at the end of each phase and again before sub
 |---|---|---|---|
 | D1 | `.env` is gitignored; `git log -p` and `git grep` show no secrets in history | PASS | `.gitignore` specifies `.env` and `*.db`; `git status --ignored` verifies; `git grep` check clean. |
 | D2 | `.env.example` contains placeholders only | PASS | Checked `.env.example`: contains dummy placeholders only. |
-| D3 | Secrets, tokens and full PayPal payloads are never logged or returned by the API | | |
+| D3 | Secrets, tokens and full PayPal payloads are never logged or returned by the API | PASS | `PayPalError` and logs sanitize headers and secrets; access token is never logged in full. |
 | D4 | All AI and user text is escaped before rendering (UI uses `textContent`; no raw `innerHTML` with dynamic data) | | |
 | D5 | Server-side validation on every POST | | |
 | D6 | SQL uses parameterised queries | | |
